@@ -1,0 +1,12 @@
+BTCUSD 15m Heiken Ashi K-Means XGBoost Model
+
+Model Performance:
+Accuracy: 0.5893
+Precision: 0.5890
+Recall: 0.6853
+F1-Score: 0.6335
+ROC-AUC: 0.6269
+
+Feature Count: 15
+Training Samples: 62418
+Test Samples: 15605
