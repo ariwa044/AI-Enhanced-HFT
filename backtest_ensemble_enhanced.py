@@ -314,7 +314,7 @@ class EnhancedBacktestEngine:
         return lot_size
     
     def simulate_trade(self, idx, signal):
-        """Simulate trade entry with daily trade limit"""
+        """Simulate trade entry with daily trade limit and K-means TP"""
         if self.current_position is not None:
             return
         
@@ -332,14 +332,24 @@ class EnhancedBacktestEngine:
         lot_size = self.calculate_position_size(entry_price, signal)
         
         sl_pips = self.risk_params['stop_loss_pips']
-        tp_pips = self.risk_params['take_profit_pips']
+        
+        # Get K-means cluster level for TP
+        # Use K-means density to determine TP level (0.5 = balanced, higher = stronger trend)
+        cluster_density = self.df['Cluster_Density'].iloc[idx] if 'Cluster_Density' in self.df.columns else 0.5
+        
+        # Cluster density based TP: scale from 200 to 400 pips based on density
+        # High density (>0.7) = stronger trend = wider TP (~400 pips)
+        # Low density (<0.3) = weaker trend = tighter TP (~200 pips)
+        tp_pips = 200 + (cluster_density * 400)  # Range: 200-600 pips
         
         if signal == 1:
             stop_loss = entry_price - (sl_pips * 0.0001)
+            # TP uses K-means cluster level
             take_profit = entry_price + (tp_pips * 0.0001)
             direction = "BUY"
         else:
             stop_loss = entry_price + (sl_pips * 0.0001)
+            # TP uses K-means cluster level
             take_profit = entry_price - (tp_pips * 0.0001)
             direction = "SELL"
         
@@ -353,6 +363,8 @@ class EnhancedBacktestEngine:
             'lot_size': lot_size,
             'stop_loss': stop_loss,
             'take_profit': take_profit,
+            'tp_pips': tp_pips,  # Store TP pips for reference
+            'cluster_density': cluster_density,  # Store cluster density for analysis
             'confidence': self.df['Signal_Confidence'].iloc[idx],
             'open_bars': 0
         }
