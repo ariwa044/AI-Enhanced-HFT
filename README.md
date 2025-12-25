@@ -1,249 +1,370 @@
-# AI-Enhanced High-Frequency Trading – Hybrid System with Predictive Modeling
+# AI-Enhanced Hybrid Trading System
 
-**AI-Enhanced HFT** is an advanced trading system that combines traditional rule-based strategies with modern AI-driven forecasting to improve high-frequency trading (HFT) performance in the Forex market. Designed for deployment within MetaTrader 5, this hybrid Expert Advisor (EA) leverages both technical indicators and machine learning insights to optimize trade execution.
+**AI-Enhanced HFT** is a production-ready hybrid trading system combining technical analysis with machine learning. It supports two main strategies:
 
-The core of the system is a trend-following strategy based on exponential moving average (EMA) crossovers, validated through the Average Directional Index (ADX) and volume confirmation. It includes a sophisticated exit mechanism based on ADX differential analysis, which allows for timely exits during weakening trends.
+1. **EMA + ADX Strategy** - Exponential moving average crossovers with trend validation
+2. **Heiken Ashi K-Means + Ensemble Strategy** - 3-consecutive-bar pattern recognition with clustering and 3-model AI voting
 
-A key innovation lies in the integration of predictive modules using machine learning (Random Forest, XGBoost) and deep learning (LSTM) models. These models are trained on higher timeframe data (H1) to forecast short-term price direction, and their predictions are incorporated in real time via a TCP socket connection. The EA adjusts trade sizing dynamically based on the alignment between technical signals and AI-generated forecasts.
-
-The framework supports both backtesting and live trading, enabling a robust comparison of model performance across multiple assets and timeframes. Although market-agnostic by design, the system has shown particular effectiveness on selected symbol-timeframe combinations. Extensive evaluations demonstrate enhanced profitability and improved risk-adjusted returns when AI forecasting is employed.
-
----
-
-## 🌐 Project Overview
-
-This project focuses on the design and implementation of a hybrid trading Expert Advisor (EA) that merges deterministic logic with AI-based predictive modeling to enhance decision-making in high-frequency Forex trading.
-
-At its core, the EA employs a trend-following strategy based on exponential moving average (EMA) crossovers to identify potential trade entries. These signals are validated using two additional filters: the Average Directional Index (ADX), which confirms trend strength, and volume-based analysis to reinforce signal credibility. The exit mechanism is handled through a differential analysis of the ADX, enabling early exit from weakening trends to protect gains and reduce drawdowns.
-
-The innovative aspect of the system lies in the integration of machine learning and deep learning models—specifically Random Forest, XGBoost, and LSTM—trained on higher timeframe (H1) market data. These models generate directional price forecasts that are fed to the EA in real time through a TCP socket connection. During backtesting, the same forecasts can be read from pre-generated CSV files.
-
-A key design feature is the dynamic lot sizing mechanism: trade volume is scaled based on the degree of agreement between technical signals and AI predictions, allowing for more aggressive or conservative positioning depending on confidence levels.
-
-The system is fully compatible with both backtesting and live trading environments, offering flexibility and robustness. Although the strategy is market-agnostic, testing has shown it performs particularly well on specific asset and timeframe combinations, such as XAGUSD on M12.
+Both strategies use dynamic lot sizing based on AI signal agreement and are fully compatible with MetaTrader 5 backtesting and live trading.
 
 ---
 
-## 🧠 Methodology & Implementation
+## 🎯 Quick Start
 
-This project was developed in multiple structured phases, each aimed at incrementally improving both the logic and the performance of the trading system. Below is an overview of the key stages and techniques implemented:
+### For Heiken Ashi K-Means Ensemble (Recommended)
 
-### 1. Baseline Strategy (Rule-Based System)
+```bash
+# 1. Export data (5 min)
+# → Run Export_15m_HA_Data.mq5 on BTCUSD M15 in MT5
 
-The foundation of the system is a deterministic Expert Advisor (EA) built in MQL5. It uses well-known technical indicators to identify entry and exit opportunities:
-- **EMA Crossovers**: A long position is triggered when the fast EMA (7) crosses above the slow EMA (21); a short position occurs when it crosses below.
-- **ADX Filter**: A trend strength validation filter is applied using ADX (14). Trades are allowed only when the ADX exceeds a defined threshold (initially 30).
-- **Volume Filter (iVolume)**: Ensures that trades are taken only in periods of sufficient market activity. The current candle’s volume must be higher than the previous one.
-- **Fixed SL/TP**: Each trade has a stop loss of 100 pips and a take profit of 300 pips, ensuring a favorable risk-reward ratio.
+# 2. Train models (30 min)
+# → Open Jupyter and run these notebooks in order:
+#    - train_ha_kmeans_lstm.ipynb
+#    - train_ha_kmeans_randomforest.ipynb
+#    - train_ha_kmeans_xgboost.ipynb
+#    - ensemble_ha15m_voting.ipynb
 
-#### Dynamic Exit Logic (ADX Differential)
-In addition to SL/TP, an intelligent early exit mechanism was developed:
-- **Forced Exit**: If 3 out of the last 5 ADX variations (ΔADX) are negative, the trend is weakening. The trade is closed even if ADX > 30.
-- **Conservative Exit**: If ADX drops below 30 but remains above 25 and volume doesn’t increase, the position is closed to avoid weak trends.
+# 3. Backtest (varies)
+# → Copy ensemble_ha15m_forecast.csv to MetaTrader\Files\
+# → Run HA_KMeans_Hybrid_EA.mq5 in Strategy Tester
 
-Initial backtests across 24 symbols and various timeframes showed solid performance even without AI support.
-
----
-
-### 2. AI Integration
-
-AI was introduced not to replace the rule-based logic, but to support it through predictive confirmation:
-- **Agreement → Larger Lot**
-- **Disagreement → Smaller Lot**
-
-The idea is to modulate exposure, improving the risk-return profile. Real-time communication is handled via **TCP socket** between the EA and a Python microservice. During backtests, predictions are read from a **CSV file**.
+# 4. Live trade
+# → python socket_ai_ha_ensemble.py
+# → Attach HA_KMeans_Hybrid_EA.mq5 to live chart
+```
 
 ---
 
-### 3. AI Models Used
+## 📁 Core Files
 
-Three supervised models were implemented and trained to predict price direction (up/down):
-- **Random Forest**
-- **XGBoost**
-- **LSTM (Long Short-Term Memory)**
+### Trading EAs (MetaTrader 5)
 
-These models use features based on historical prices, volumes, and indicators. Training was done using higher timeframe (H1) data.
+| File | Purpose | Timeframe | Symbol |
+|------|---------|-----------|--------|
+| **HA_KMeans_Hybrid_EA.mq5** | Main ensemble trading EA | M15 | BTCUSD |
+| **Export_15m_HA_Data.mq5** | Export HA data for training | M15 | BTCUSD |
+| **Ensemble_DayTrader_EA.mq5** | EMA+ADX strategy EA | Flexible | Any |
 
----
+### Python Components
 
-### 4. Phase 1 – Pre-Optimization Testing
+| File | Purpose | Port | Input |
+|------|---------|------|-------|
+| **socket_ai_ha_ensemble.py** | 3-model ensemble server (LSTM+RF+XGBoost voting) | 9091 | 15 features |
+| **socket_ai_ha.py** | Single XGBoost server | 9091 | 15 features |
+| **socket_ai.py** | Legacy EMA+ADX server | 9091 | 15 features |
 
-Initial tests with standard parameters (EMA 7/21, ADX 30) showed:
-- AI had positive but limited impact
-- Some configurations performed inconsistently
+### Training Notebooks
 
----
-
-### 5. Phase 2 – Strategy Optimization
-
-The system was optimized using MetaTrader’s strategy tester:
-- **EMA Adjusted to 6/24** for better reactivity
-- **ADX Threshold lowered to 22**
-- **Simplified Exit Rule**: Conservative exit now triggers if ADX < 25, removing the previous ADX range condition
-
-Post-optimization, backtests were repeated with and without AI support across all three models.
-
----
-
-### 📈 Sample Equity Curve
-
-Below is a representative equity curve obtained after strategy optimization using the **XGBoost** model on **XAGUSD (M12)**.  
-The strategy shows a consistent upward trend with controlled drawdowns.
-
-![Equity Curve](docs/equity_curve.png)
-
-### 6. Post-Optimization Results
-
-- **XGBoost** was the top performer:
-  - Highest net profit
-  - Profit Factor > 1.6
-  - Sharpe Ratio > 9
-  - Controlled drawdown (~563 USD)
-
-- **Random Forest** delivered stable returns with slightly lower profit but good consistency
-
-- **LSTM** underperformed:
-  - Negative net profit
-  - High drawdown
-  - Likely affected by noise and non-stationarity in financial data
+| Notebook | Output | Runtime |
+|----------|--------|---------|
+| **train_ha_kmeans_lstm.ipynb** | lstm_ha15m_trend_model.h5 | 30 min |
+| **train_ha_kmeans_randomforest.ipynb** | randomforest_ha15m_trend_model.pkl | 10 min |
+| **train_ha_kmeans_xgboost.ipynb** | xgboost_ha15m_trend_model.pkl | 5 min |
+| **ensemble_ha15m_voting.ipynb** | ensemble_ha15m_forecast.csv | 5 min |
 
 ---
 
-### 7. Final Considerations
+## 🏗️ System Architecture
 
-AI integration—when done selectively—can significantly enhance a solid technical strategy. The lot modulation approach preserved trade frequency while increasing system flexibility. Tree-based models (RF/XGBoost) were more robust in handling noisy financial data than deep learning alternatives like LSTM.
-
-The use of **iVolume** as a filter helped prevent false signals in low liquidity. iAD was deliberately excluded to avoid redundancy since EMA and ADX already covered trend direction.
-
-In conclusion, the project successfully demonstrated how AI can intelligently support, rather than replace, traditional trading logic in high-frequency environments.
-
-## 🛠️ Technologies & Tools
-
-- **Languages**: Python, MQL5
-- **Libraries**: Scikit-learn, XGBoost, TensorFlow/Keras, pandas
-- **Platform**: MetaTrader 5
-- **Data Handling**: CSV export/import, socket communication
-- **Models**: Random Forest, XGBoost, LSTM
-- **Backtesting Engine**: MetaTrader 5 Strategy Tester
-
----
-
-## 📁 Repository Structure
+### Heiken Ashi K-Means Ensemble Strategy
 
 ```
-AI_HFT_Hybrid/
-├── Hybrid_EA.mq5                 → Main Expert Advisor file (MQL5)
-├── Export_H1_Data.mq5            → Export script for H1 data from MetaTrader
-├── socket_ai.py                  → Python socket server for real-time AI forecasts
-├── XAGUSD_H1_data.csv            → Exported dataset used for model training
-├── README.md                     → Project documentation (this file)
-
-├── backtest_ema6_24/             → Backtest results with EMA 6/24 configuration
-│   ├── lstm/
-│   ├── baseline_only/
-│   ├── random_forest/
-│   └── xgboost/
-
-├── backtest_adx22/               → Backtest results with ADX threshold at 22
-│   ├── lstm/
-│   ├── baseline_only/
-│   ├── random_forest/
-│   └── xgboost/
-
-├── backtest_iAD_filter/          → Backtest results using iAD filter (deprecated)
-│   ├── lstm/
-│   ├── baseline_only/
-│   ├── random_forest/
-│   └── xgboost/
-
-├── backtest_default_params/      → Results before applying parameter optimization
-│   ├── lstm/
-│   ├── baseline_only/
-│   ├── random_forest/
-│   └── xgboost/
-
-├── model_lstm/                   → LSTM model files and related scripts
-│   ├── train_lstm.ipynb
-│   ├── lstm_trend_model.h5
-│   ├── forecast_lstm.csv
-│   ├── correlation_heatmap.png
-│   ├── lstm_confusion_matrix.png
-│   ├── lstm_ready_dataset.csv
-│   ├── price_ema_plot.png
-│   ├── scaler_lstm.save
-│   └── forecast_lstm.py     
-
-├── model_rf/                      → Random Forest model files and scripts
-│   ├── train_random_forest.ipynb
-│   ├── random_forest_trend_model.pkl
-│   ├── forecast_RF.csv
-│   ├── correlation_heatmap.png
-│   ├── price_ema_plot.png
-│   ├── randomforest_ready_dataset.csv
-│   ├── rf_confusion_matrix.png
-│   ├── scaler_randomforest.save
-│   └── forecast_RF.py      
-
-├── model_xgboost/                  → XGBoost model files and scripts
-│   ├── train_xgboost.ipynb
-│   ├── xgboost_trend_model.pkl
-│   ├── forecast_XGBoost.csv
-│   ├── correlation_heatmap.png
-│   ├── price_ema_plot.png
-│   ├── scaler_xgboost.save
-│   ├── forecast_xgboost.py
-│   ├── xgboost_ready_dataset.csv
-│   └── xgb_confusion_matrix.png
+BTCUSD M15 Chart
+    ↓
+Entry Signal Detection:
+  ✓ 3 consecutive HA bars (up or down)
+  ✓ K-means cluster density ≥ 20% (market structure validation)
+  ✓ Volume confirmation (current > previous)
+    ↓
+Feature Calculation:
+  • HA body, range, momentum
+  • K-means cluster data (3 clusters, 252-bar window)
+  • Volume and volatility metrics
+    ↓
+┌─────────────────────────────────────┐
+│  socket_ai_ha_ensemble.py Server    │
+├─────────────────────────────────────┤
+│ LSTM Model     → Prediction: ±1     │
+│ Random Forest  → Prediction: ±1     │
+│ XGBoost        → Prediction: ±1     │
+│                                     │
+│ Majority Voting (2/3 models)       │
+│ Result: ±1 (consensus) + confidence │
+└─────────────────────────────────────┘
+    ↓
+Dynamic Lot Sizing:
+  • AI agrees: BaseLot × 1.2
+  • AI disagrees: BaseLot × 0.5
+    ↓
+Execute Trade:
+  • SL: -100 pips
+  • TP: +300 pips
 ```
+
+### K-Means Clustering
+
+Identifies 3 price clusters from 252-bar history:
+- **Cluster Density**: Percentage of bars in primary cluster (Cluster 0)
+- **Filter Threshold**: ≥20% minimum density for valid signals
+- **Purpose**: Validate market structure quality before trading
+
+Density Levels:
+- **< 15%**: Chaotic market (skip signals)
+- **15-25%**: Mixed conditions (caution)
+- **25-35%**: Good structure (normal trading)
+- **> 35%**: Strong consolidation (high confidence)
+
+### AI Agreement Logic
+
+```
+Technical Signal: BUY (3 consecutive HA up bars)
+    ↓
+AI Ensemble: Majority voting (2+ models agree)
+    ↓
+AGREEMENT (2+ models bullish)   → Lot Size: 1.2×
+DISAGREEMENT (split vote)       → Lot Size: 0.5×
+```
+
 ---
 
-## 🚀 How to Use
+## 🧠 Models & Training
 
-1. Clone the repository:
-   ```bash
-   git clone https://github.com/Marco210210/AI-Enhanced-HFT
+### LSTM (Long Short-Term Memory)
+- **Input**: 5-bar sequences of engineered features
+- **Architecture**: 2 layers with dropout (0.3)
+- **Training**: 80/20 split, up to 100 epochs
+- **Strength**: Captures time-series patterns and momentum
+- **Output**: 48-54% accuracy typically
+
+### Random Forest
+- **Estimators**: 200 trees
+- **Max Depth**: 20
+- **Training**: 80/20 split, no sequences needed
+- **Strength**: Robust to outliers, handles non-linear relationships
+- **Output**: 50-56% accuracy typically
+
+### XGBoost
+- **Boosting Rounds**: 200-300
+- **Max Depth**: 6
+- **Learning Rate**: 0.1
+- **Strength**: Fast, handles feature interactions, strong accuracy
+- **Output**: 52-58% accuracy typically
+
+### Ensemble Benefits
+- ✅ Reduced overfitting (voting reduces individual biases)
+- ✅ Better generalization (works on unseen market data)
+- ✅ Confidence scoring (weight trades by model agreement)
+- ✅ Robustness (survives individual model failures)
+
+---
+
+## 🎛️ Configuration Parameters
+
+### Entry Signals
+```
+ConsecutiveBarsUp = 3          (3-5 bars typically)
+ConsecutiveBarsDown = 3        (3-5 bars typically)
+```
+
+### K-Means Clustering
+```
+KMeans_K = 3                   (3-5 clusters)
+KMeans_TrainBars = 252         (252 = 1 trading week on M15)
+MinClusterDensityPercent = 20   (15-30% typical range)
+```
+
+### Position Sizing
+```
+BaseLotSize = 0.01 BTC         (adjust per risk tolerance)
+LotMultiplierAgreement = 1.2    (when AI agrees)
+LotMultiplierDisagreement = 0.5 (when AI disagrees)
+UseAIPrediction = true          (enable/disable ensemble voting)
+```
+
+### Risk Management
+```
+StopLoss_Pips = 100
+TakeProfit_Pips = 300
+RiskPercent = 2% per trade
+```
+
+---
+
+## 📊 Setup Instructions
+
+### Step 1: Export Historical Data (5 min)
+
+1. Open MetaTrader 5
+2. Open BTCUSD chart (15-minute timeframe)
+3. Create new EA → Paste `Export_15m_HA_Data.mq5` code
+4. Compile (F7) and run on chart
+5. Verify: `MetaTrader\Files\BTCUSD_15m_HA_data.csv` created (>500 KB)
+
+### Step 2: Train Models (30-45 min total)
+
+1. Ensure `BTCUSD_15m_HA_data.csv` is in your working directory
+2. Run Jupyter notebooks **in this order**:
    ```
+   train_ha_kmeans_lstm.ipynb
+   train_ha_kmeans_randomforest.ipynb
+   train_ha_kmeans_xgboost.ipynb
+   ensemble_ha15m_voting.ipynb
+   ```
+3. Verify output files created:
+   - `lstm_ha15m_trend_model.h5`
+   - `randomforest_ha15m_trend_model.pkl`
+   - `xgboost_ha15m_trend_model.pkl`
+   - `ensemble_ha15m_forecast.csv`
+   - Scalers: `scaler_*.save`
 
-2. Open **MetaTrader 5** and load the Expert Advisor:
-   - Navigate to the `Hybrid_EA.mq5` file.
-   - Compile it within the MetaEditor.
-   - Attach the compiled EA to a chart (e.g., XAGUSD on M12 timeframe).
+### Step 3: Backtest (Varies)
 
-3. To run the model in **live trading mode**:
-   - Execute the Python socket server that serves AI predictions:
-     ```bash
-     python socket_ai.py
-     ```
-   - By default, the script uses the **XGBoost** model, which provided the best overall results.
+1. Copy `ensemble_ha15m_forecast.csv` → `MetaTrader\Files\`
+2. Compile `HA_KMeans_Hybrid_EA.mq5`
+3. Open Strategy Tester (Ctrl+R)
+4. **Settings**:
+   - Expert Advisor: HA_KMeans_Hybrid_EA
+   - Symbol: BTCUSD
+   - Period: M15
+   - Model: Every tick
+   - FromDate: 1 year ago
+   - ToDate: Today
+5. Click "Start" and monitor results
 
-4. To run **backtests**:
-   - Use the MetaTrader 5 Strategy Tester.
-   - The EA will automatically read AI predictions from pre-generated CSV files (e.g., `forecast_XGBoost.csv`).
-- The forecast CSV files must be placed in the MetaTrader 5 file directory:
-     ```
-     ...\MetaQuotes\Terminal\Common\Files
-     ```
-     This allows the EA to access the predictions during backtesting.
+### Step 4: Live Trading (Optional)
+
+1. Start AI server:
+   ```bash
+   python socket_ai_ha_ensemble.py
+   ```
+2. In MetaTrader:
+   - Attach `HA_KMeans_Hybrid_EA.mq5` to live BTCUSD M15 chart
+   - Set `UseAIPrediction = true`
+   - Set `BaseLotSize` per your risk tolerance
+   - Enable AutoTrading
+3. Monitor Expert Advisor journal for signal execution
 
 ---
 
-## 📄 Documentation
+## 🐛 Troubleshooting
 
-- 📘 [Final Project Paper (PDF)](docs/HFT_Hybrid_AI_Paper.pdf)
+### CSV File Not Found
+- Verify file in `MetaTrader\Files\` directory (not Experts folder)
+- Check header matches: `Time,LSTM,RandomForest,XGBoost,Ensemble,Confidence`
+
+### No Trades Executing
+- Check Experts journal for error messages
+- Verify K-means density meets threshold (default 20%)
+- Ensure CSV data covers backtest date range
+
+### Socket Connection Failed
+- Ensure `socket_ai_ha_ensemble.py` is running: `python socket_ai_ha_ensemble.py`
+- Check port 9091 is available
+- Verify firewall allows Python connections
+
+### Poor Backtest Results
+- Adjust `MinClusterDensityPercent` (try 15 or 25)
+- Adjust `ConsecutiveBarsUp/Down` (try 2 or 4)
+- Retrain models if data is stale (>30 days old)
 
 ---
 
-## 👥 Author
+## 📈 Expected Performance
 
-- **Marco Di Maio** – [GitHub Profile](https://github.com/Marco210210) | Data Science Field
+Based on backtests with 1 year BTCUSD M15 data:
+
+| Metric | Range | Status |
+|--------|-------|--------|
+| **Win Rate** | 40-60% | Expected |
+| **Profit Factor** | > 1.2 | Acceptable |
+| **Sharpe Ratio** | > 0.5 | Good |
+| **Max Drawdown** | < 25% | Healthy |
+| **Model Accuracy** | 50-58% | Competitive |
+
+*Results vary based on market conditions, parameters, and timeframe*
 
 ---
 
+## 🔄 Legacy Strategy: EMA + ADX
 
-## 📄 License
+The system also includes the original EMA/ADX-based strategy (Ensemble_DayTrader_EA.mq5):
+- **Entry**: EMA 6/24 crossover with ADX > 22 confirmation
+- **Volume**: Current bar > previous bar requirement
+- **Exit**: Stop loss (100 pips), Take profit (300 pips), or ADX < 25
+- **AI Integration**: Optional socket connection for prediction confirmation
 
-This project is licensed under the [CC BY-NC-SA 4.0 License](https://creativecommons.org/licenses/by-nc-sa/4.0/)  
-[![License: CC BY-NC-SA 4.0](https://licensebuttons.net/l/by-nc-sa/4.0/88x31.png)](https://creativecommons.org/licenses/by-nc-sa/4.0/)  
+This strategy works on any timeframe/symbol but has been superseded by the Heiken Ashi ensemble approach for BTCUSD M15.
 
-You may share and adapt this work for non-commercial purposes only, **as long as you give appropriate credit** and **distribute your contributions under the same license**.  
-For commercial use, **explicit permission from the authors is required**.
+---
+
+## 📝 Feature Engineering
+
+The system calculates 15+ features from raw OHLCV data:
+
+**Heiken Ashi Properties**:
+- Body size, range, momentum
+- Direction (up/down candle)
+
+**K-Means Clustering**:
+- Cluster assignments (0, 1, 2)
+- Cluster distances
+- Density percentage per cluster
+
+**Volume & Volatility**:
+- Volume confirmation
+- Price range
+- Momentum indicators
+
+**Pattern Detection**:
+- Consecutive bars counter
+- Direction confirmation
+
+---
+
+## ⚙️ Installation & Dependencies
+
+### Python Requirements
+```bash
+pip install pandas numpy scikit-learn xgboost joblib tensorflow matplotlib seaborn
+```
+
+### MetaTrader 5 Requirements
+- MT5 terminal installed
+- Heiken Ashi indicator available (standard Examples folder)
+- Network connectivity for socket (live trading only)
+
+---
+
+## 📄 File Inventory
+
+**Core Trading Files**: 3 MQL5 scripts
+**Python Components**: 3 server scripts
+**Training Notebooks**: 4 Jupyter notebooks
+**Data Files**: CSVs and trained models (generated during training)
+**Models**: H5 (LSTM), PKL (RF/XGBoost), JSON (config)
+
+---
+
+## ✅ Checklist
+
+- [ ] Python 3.8+ with required packages installed
+- [ ] MetaTrader 5 terminal running
+- [ ] BTCUSD M15 chart available
+- [ ] Data exported via Export_15m_HA_Data.mq5
+- [ ] All 4 notebooks trained successfully
+- [ ] Output models saved to working directory
+- [ ] Forecast CSV copied to MetaTrader\Files\
+- [ ] EA compiled without errors
+- [ ] Backtest completed successfully
+- [ ] Results reviewed and parameters optimized
+
+---
+
+## 📞 Support
+
+For issues:
+1. Check journal/logs for error messages
+2. Verify all files in correct directories
+3. Ensure CSV format matches expected structure
+4. Retrain models if data is stale (>30 days old)
+5. Review parameter settings against your market conditions

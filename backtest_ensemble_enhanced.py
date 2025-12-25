@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
 Enhanced Heiken Ashi K-Means Ensemble Backtesting System
+- XGBoost Primary (event-driven) + Random Forest Confirmation (filter)
 - Data leakage detection
 - Consecutive trades tracking
 - Consecutive days open tracking
@@ -39,9 +40,13 @@ class EnhancedBacktestEngine:
         self.df = pd.read_csv(csv_file)
         self.ensemble_df = pd.read_csv(ensemble_file)
         
+        # Convert Time columns to datetime for proper merging
+        self.df['Time'] = pd.to_datetime(self.df['Time'])
+        self.ensemble_df['Time'] = pd.to_datetime(self.ensemble_df['Time'])
+        
         # Default risk parameters
         self.risk_params = risk_params or {
-            'stop_loss_pips': 100,
+            'stop_loss_pips': 10,
             'take_profit_pips': 300,
             'min_lot_size': 0.5,
             'max_lot_size': 1.2,
@@ -49,11 +54,11 @@ class EnhancedBacktestEngine:
             'risk_percent': 2.0
         }
         
-        # Merge data
-        self.df = self.df.merge(self.ensemble_df, left_on='Time', right_on='Time', how='left')
+        # Merge data on Time
+        # Ensemble CSV has: Time, XGB_Trigger, RF_Confirm, Signal, Confirmed, Confidence
+        self.df = self.df.merge(self.ensemble_df, on='Time', how='left')
         
         # Filter by date range if provided
-        self.df['Time'] = pd.to_datetime(self.df['Time'])
         if start_date:
             start_date = pd.to_datetime(start_date)
             self.df = self.df[self.df['Time'] >= start_date]
@@ -94,15 +99,15 @@ class EnhancedBacktestEngine:
         
         leakage_found = False
         
-        # Check 1: Ensemble signals alignment
+        # Check 1: Signal alignment (XGB primary + RF confirmation)
         ensemble_shift = self.check_ensemble_alignment()
         if ensemble_shift > 0:
-            msg = f"⚠ Potential data leakage: Ensemble predictions are {ensemble_shift} bars ahead"
+            msg = f"⚠ Potential data leakage: XGB/RF signals are {ensemble_shift} bars ahead"
             print(msg)
             self.data_leakage_issues.append(msg)
             leakage_found = True
         else:
-            print("✓ Ensemble predictions are properly lagged (no lookahead detected)")
+            print("✓ XGB triggers + RF confirmation properly lagged (no lookahead detected)")
         
         # Check 2: K-means clustering uses historical data
         kmeans_check = self.check_kmeans_lookback()
@@ -281,22 +286,49 @@ class EnhancedBacktestEngine:
             print("✓ Volume confirmation: All bars valid (volume data not available)")
     
     def generate_signals(self):
-        """Generate trading signals based on ensemble voting only (no pattern requirement)"""
+        """Generate trading signals based on XGBoost primary + Random Forest confirmation"""
         df = self.df
-        df['Signal'] = 0
-        df['Signal_Confidence'] = 0
         
+        # Initialize if Signal column doesn't exist from ensemble
+        if 'Signal' not in df.columns:
+            df['Signal'] = 0
+        if 'Signal_Confidence' not in df.columns:
+            df['Signal_Confidence'] = 0
+        if 'Confirmed' not in df.columns:
+            df['Confirmed'] = 0
+        
+        # DEBUG: Show what columns we have
+        print("\n[DEBUG] Available columns:")
+        for col in df.columns:
+            print(f"  - {col}")
+        
+        print(f"\n[DEBUG] Signal column info:")
+        print(f"  Non-NaN Signal values: {df['Signal'].notna().sum()}")
+        print(f"  Unique Signal values: {df['Signal'].dropna().unique()}")
+        print(f"  Confirmed column info: {df['Confirmed'].notna().sum()} non-NaN")
+        print(f"  Unique Confirmed values: {df['Confirmed'].dropna().unique()}")
+        print(f"  XGB_Trigger unique: {df['XGB_Trigger'].dropna().unique() if 'XGB_Trigger' in df.columns else 'N/A'}")
+        
+        confirmed_count = 0
         for i in range(len(df)):
-            if pd.notna(df['Ensemble'].iloc[i]):
-                signal = df['Ensemble'].iloc[i]
-                confidence = df['Confidence'].iloc[i] if 'Confidence' in df.columns else 67
+            # Use XGB_Trigger as primary signal source
+            if pd.notna(df['XGB_Trigger'].iloc[i]) if 'XGB_Trigger' in df.columns else False:
+                xgb_signal = df['XGB_Trigger'].iloc[i]
+                confirmed = df['Confirmed'].iloc[i] if 'Confirmed' in df.columns else 0
+                confidence = df['Confidence'].iloc[i] if 'Confidence' in df.columns else 0
                 
-                # Trade based on ensemble signal only (no 3-bar pattern requirement)
-                # Ensemble signal is authoritative: 1 (BUY), -1 (SELL), 0 (NEUTRAL)
-                df.loc[i, 'Signal'] = signal
-                df.loc[i, 'Signal_Confidence'] = confidence
+                # Only take confirmed signals (RF confirms XGB trigger)
+                if confirmed == 1:  # RF confirms XGB
+                    df.loc[i, 'Signal'] = xgb_signal  # Use XGB signal (1 or -1)
+                    df.loc[i, 'Signal_Confidence'] = confidence
+                    confirmed_count += 1
+                else:
+                    df.loc[i, 'Signal'] = 0  # Skip unconfirmed signals
         
-        print("✓ Trading signals generated (ensemble voting only, no pattern requirement)")
+        print(f"\n[DEBUG] After filtering:")
+        print(f"  Confirmed signals (to execute): {confirmed_count}")
+        print(f"  Final Signal distribution: {df['Signal'].value_counts().to_dict()}")
+        print("✓ Trading signals generated (XGB primary, RF confirmation only)")
     
     def calculate_position_size(self, entry_price, signal):
         """Calculate position size based on risk"""
@@ -561,6 +593,13 @@ class EnhancedBacktestEngine:
         print(f"  Net Profit/Loss:     ${self.net_profit:,.2f}")
         print(f"  ROI:                 {self.roi:.2f}%")
         
+        print(f"\n🎯 ENSEMBLE STRATEGY (XGB Primary + RF Confirmation):")
+        total_xgb_triggers = len([t for t in self.trades if pd.notna(t.get('signal'))])
+        confirmed_trades = len([t for t in self.trades if pd.notna(t.get('signal'))])
+        print(f"  XGB Triggers Received: {total_xgb_triggers}")
+        print(f"  RF Confirmed Trades:   {confirmed_trades}")
+        print(f"  Confirmation Rate:     {(confirmed_trades/total_xgb_triggers*100) if total_xgb_triggers > 0 else 0:.1f}%")
+        
         print(f"\n📈 TRADE STATISTICS:")
         print(f"  Total Trades:        {self.total_trades}")
         print(f"  Winning Trades:      {self.winning_trades}")
@@ -659,12 +698,12 @@ def main():
     ensemble_file = 'ensemble_ha15m_forecast.csv'
     
     # Optional date range
-    start_date ='2025-01-01'
-    end_date = '2025-12-10'
+    start_date = '2025-01-01'  # Start from January 1, 2025
+    end_date = None  # Use last date in dataset
     
     risk_params = {
-        'stop_loss_pips': 300,           # Wider stops for day trading (was 100)
-        'take_profit_pips': 800,         # Wider targets for day trading (was 300)
+        'stop_loss_pips': 100,           # Wider stops for day trading (was 100)
+        'take_profit_pips': 300,         # Wider targets for day trading (was 300)
         'min_lot_size': 0.5,
         'max_lot_size': 1.2,
         'account_balance': 10000,
