@@ -62,9 +62,9 @@ You should see a successful JSON response:
     ```bash
     pip install MetaTrader5 pandas numpy requests scikit-learn
     ```
-3.  Open `client/trade_client.py` and update the `API_URL` with your Render URL:
+3.  Open `client/trade_client.py` and update the `API_URL` (I have already done this for you):
     ```python
-    API_URL = "https://my-bot.onrender.com/predict"
+    API_URL = "https://ai-main-ai-92945097390.europe-west2.run.app/predict"
     ```
 4.  Open MetaTrader 5 and ensure "Algo Trading" is enabled.
 5.  Run the client:

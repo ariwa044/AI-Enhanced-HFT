@@ -2,17 +2,33 @@ import MetaTrader5 as mt5
 import pandas as pd
 import numpy as np
 import requests
+import asyncio
+import websockets
+import json
 import time
 from datetime import datetime
 from sklearn.preprocessing import StandardScaler
 from sklearn.cluster import KMeans
 import sys
+import logging
 
 # === Configuration ===
-API_URL = "http://localhost:8080/predict"  # Change to Cloud Run URL in production
-SYMBOL = "BTCUSD"
+WS_URL = "wss://ai-main-ai-92945097390.europe-west2.run.app/ws" # Production
+#WS_URL = "ws://localhost:8080/ws" # Local Testing
+SYMBOL = "BTCUSDm"
 TIMEFRAME = mt5.TIMEFRAME_M15
 LOOKBACK_BARS = 1000  # Increased to 1000 for better stability of MA/Volatility calculations
+
+# === Logging Setup ===
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('trade_bot.log'),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger(__name__)
 
 # === Risk Management ===
 RISK_PARAMS = {
@@ -23,8 +39,175 @@ RISK_PARAMS = {
     "MIN_LOT_SIZE": 0.01,
     "MAGIC_NUMBER": 123456,
     "MIN_HOLDING_BARS": 10,   # Minimum bars to hold (approx 2.5h on M15)
-    "MAX_DAILY_TRADES": 6     # Max trades per day
+    "MAX_DAILY_TRADES": 6,    # Max trades per day
+    # Credentials (0 = use current terminal)
+    "MT5_LOGIN": 297647959,           
+    "MT5_PASSWORD": "Arinze123.",
+    "MT5_SERVER": "Exness-MT5Trial9" 
 }
+
+def initialize_mt5():
+    if not mt5.initialize():
+        logger.error(f"initialize() failed, error code = {mt5.last_error()}")
+        sys.exit(1)
+        
+    # Attempt login if credentials provided
+    if RISK_PARAMS["MT5_LOGIN"] != 0:
+        authorized = mt5.login(
+            login=RISK_PARAMS["MT5_LOGIN"], 
+            password=RISK_PARAMS["MT5_PASSWORD"], 
+            server=RISK_PARAMS["MT5_SERVER"]
+        )
+        if authorized:
+            logger.info(f"Logged in to account #{RISK_PARAMS['MT5_LOGIN']}")
+            
+            # Print account balance
+            account_info = mt5.account_info()
+            if account_info:
+                logger.info(f"Account Balance: {account_info.balance:.2f} {account_info.currency}")
+                logger.info(f"Account Equity: {account_info.equity:.2f} {account_info.currency}")
+                logger.info(f"Free Margin: {account_info.margin_free:.2f} {account_info.currency}")
+        else:
+            logger.error(f"Failed to login to account #{RISK_PARAMS['MT5_LOGIN']}, error code: {mt5.last_error()}")
+            sys.exit(1)
+            
+    logger.info(f"MT5 Initialized. Connected to {mt5.terminal_info().name}")
+
+
+
+def get_data():
+    rates = mt5.copy_rates_from_pos(SYMBOL, TIMEFRAME, 0, LOOKBACK_BARS)
+    if rates is None:
+        logger.error(f"Failed to get rates. Error: {mt5.last_error()}")
+        return None
+    
+    df = pd.DataFrame(rates)
+    logger.info(f"Retrieved {len(df)} bars for {SYMBOL}")
+    df['time'] = pd.to_datetime(df['time'], unit='s')
+    
+    # Rename for consistency
+    df.rename(columns={'tick_volume': 'Volume', 'open': 'Open', 'high': 'High', 'low': 'Low', 'close': 'Close'}, inplace=True)
+    return df
+
+def calculate_heiken_ashi_and_features(df):
+    logger.debug("Calculating Heiken Ashi candles...")
+    # 1. Heiken Ashi Calculation
+    ha_open = np.zeros(len(df))
+    ha_close = np.zeros(len(df))
+    ha_high = np.zeros(len(df))
+    ha_low = np.zeros(len(df))
+    
+    # First bar
+    ha_open[0] = (df['Open'].iloc[0] + df['Close'].iloc[0]) / 2
+    ha_close[0] = (df['Open'].iloc[0] + df['High'].iloc[0] + df['Low'].iloc[0] + df['Close'].iloc[0]) / 4
+    ha_high[0] = max(df['High'].iloc[0], ha_open[0], ha_close[0])
+    ha_low[0] = min(df['Low'].iloc[0], ha_open[0], ha_close[0])
+    
+    # Subsequent
+    for i in range(1, len(df)):
+        ha_close[i] = (df['Open'].iloc[i] + df['High'].iloc[i] + df['Low'].iloc[i] + df['Close'].iloc[i]) / 4
+        ha_open[i] = (ha_open[i-1] + ha_close[i-1]) / 2
+        ha_high[i] = max(df['High'].iloc[i], ha_open[i], ha_close[i])
+        ha_low[i] = min(df['Low'].iloc[i], ha_open[i], ha_close[i])
+        
+    df['HA_Open'] = ha_open
+    df['HA_High'] = ha_high
+    df['HA_Low'] = ha_low
+    df['HA_Close'] = ha_close
+    logger.debug("Heiken Ashi calculations complete.")
+    
+    # 2. HA Metrics
+    df['HA_Body'] = abs(df['HA_Close'] - df['HA_Open'])
+    df['HA_Range'] = df['HA_High'] - df['HA_Low']
+    df['HA_Close_Change'] = df['HA_Close'].pct_change()
+    df['HA_Momentum'] = df['HA_Close'] - df['HA_Close'].shift(5) # 5-bar momentum
+    df['HA_Volatility'] = df['HA_Range'].rolling(5).std()
+    
+    # 3. K-Means Cluster Density (Last Bar Only needed, but requires window)
+    logger.debug("Calculating Rolling K-Means...")
+    window = 252
+    if len(df) < window + 1:
+        logger.warning("Not enough data for K-Means")
+        return None
+        
+    # We only need the feature for the LAST closed bar (row -1)
+    # Features used for clustering: HA_Open, HA_High, HA_Low, HA_Close
+    cluster_features = ['HA_Open', 'HA_High', 'HA_Low', 'HA_Close']
+    
+    # Get window for the last point
+    X = df[cluster_features].iloc[-window:].values
+    scaler = StandardScaler()
+    X_scaled = scaler.fit_transform(X)
+    
+    kmeans = KMeans(n_clusters=3, random_state=42, n_init=3)
+    clusters = kmeans.fit_predict(X_scaled)
+    
+    current_cluster = clusters[-1]
+    cluster_count = np.sum(clusters == current_cluster)
+    density = (cluster_count / window) * 100
+    
+    df['Cluster_Density'] = 0.5 # Default
+    df.iloc[-1, df.columns.get_loc('Cluster_Density')] = density
+    logger.info(f"K-Means: Cluster {current_cluster}, Density {density:.2f}%")
+    
+    # 4. Patterns
+    df['Consecutive_Up'] = 0
+    df['Consecutive_Down'] = 0
+    up_count = 0
+    down_count = 0
+    
+    for i in range(1, len(df)):
+        if df['HA_Close'].iloc[i] > df['HA_Close'].iloc[i-1]:
+            up_count += 1
+            down_count = 0
+        elif df['HA_Close'].iloc[i] < df['HA_Close'].iloc[i-1]:
+            down_count += 1
+            up_count = 0
+        else:
+            up_count = 0
+            down_count = 0
+        
+        df.iloc[i, df.columns.get_loc('Consecutive_Up')] = up_count
+        df.iloc[i, df.columns.get_loc('Consecutive_Down')] = down_count
+
+    # 5. Volume
+    df['Volume_Change'] = df['Volume'].pct_change()
+    df['Volume_MA_5'] = df['Volume'].rolling(5).mean()
+    df['Volume_Ratio'] = df['Volume'] / df['Volume_MA_5']
+    
+    # Replace NaNs
+    df.fillna(0, inplace=True)
+    
+    # Extract feature vector for the last bar
+    # Use -1 (live bar) or -2 (last closed bar)? 
+    # Usually models trained on closed bars -> use -2? 
+    # Or if fetching current incomplete bar -> -1. 
+    # Let's assume prediction is for NEXT movement based on logic.
+    # We will use the last available row.
+    last_row = df.iloc[-1]
+    
+    feature_columns = [
+        'HA_Open', 'HA_High', 'HA_Low', 'HA_Close',
+        'HA_Body', 'HA_Range', 'HA_Close_Change',
+        'HA_Momentum', 'HA_Volatility',
+        'Cluster_Density',
+        'Consecutive_Up', 'Consecutive_Down',
+        'Volume', 'Volume_Change', 'Volume_Ratio'
+    ]
+    
+    return [float(last_row[col]) for col in feature_columns]
+
+def get_prediction(features):
+    try:
+        response = requests.post(API_URL, json={"features": features}, timeout=5)
+        if response.status_code == 200:
+            return response.json()
+        else:
+            logger.warning(f"API Error: {response.text}")
+            return None
+    except Exception as e:
+        logger.error(f"Connection Error: {e}")
+        return None
 
 # State Tracking
 daily_trade_state = {
@@ -38,7 +221,7 @@ def check_daily_limit_reset():
     if daily_trade_state["date"] != today:
         daily_trade_state["count"] = 0
         daily_trade_state["date"] = today
-        print("New day: Reset daily trade count.")
+        logger.info("New day: Reset daily trade count.")
 
 def calculate_lot_size(sl_pips):
     account_info = mt5.account_info()
@@ -92,7 +275,7 @@ def execute_trade(signal, confidence):
         return # Neutral
         
     if signal == current_direction:
-        print(f"Creating/Holding position matching signal {signal}")
+        logger.debug(f"Creating/Holding position matching signal {signal}")
         return
         
     # --- Close Logic (with Min Holding check) ---
@@ -103,10 +286,10 @@ def execute_trade(signal, confidence):
         bars_held = duration_sec / (15 * 60) # M15 = 900 seconds
         
         if bars_held < RISK_PARAMS["MIN_HOLDING_BARS"]:
-            print(f"Signal flip, but holding: {bars_held:.1f}/{RISK_PARAMS['MIN_HOLDING_BARS']} bars.")
+            logger.info(f"Signal flip, but holding: {bars_held:.1f}/{RISK_PARAMS['MIN_HOLDING_BARS']} bars.")
             return
 
-        print("Closing opposite position...")
+        logger.info("Closing opposite position...")
         request = {
             "action": mt5.TRADE_ACTION_DEAL,
             "position": current_pos.ticket,
@@ -121,16 +304,16 @@ def execute_trade(signal, confidence):
         }
         result = mt5.order_send(request)
         if result.retcode != mt5.TRADE_RETCODE_DONE:
-            print(f"Close failed: {result.comment}")
+            logger.error(f"Close failed: {result.comment}")
             return
         else:
-            print("Position closed. Ready to reverse.")
+            logger.info("Position closed. Ready to reverse.")
             # Wait a tick?
             time.sleep(1)
 
     # --- Open Logic (with Max Daily Trades check) ---
     if daily_trade_state["count"] >= RISK_PARAMS["MAX_DAILY_TRADES"]:
-        print(f"Daily trade limit reached ({daily_trade_state['count']}/{RISK_PARAMS['MAX_DAILY_TRADES']}). Skipping.")
+        logger.warning(f"Daily trade limit reached ({daily_trade_state['count']}/{RISK_PARAMS['MAX_DAILY_TRADES']}). Skipping.")
         return
 
     lot_size = calculate_lot_size(RISK_PARAMS["STOP_LOSS_PIPS"])
@@ -159,41 +342,68 @@ def execute_trade(signal, confidence):
     
     result = mt5.order_send(request)
     if result.retcode == mt5.TRADE_RETCODE_DONE:
-        print(f"Open Trade Result: {result.comment}")
+        logger.info(f"Open Trade Result: {result.comment}")
         daily_trade_state["count"] += 1
     else:
-        print(f"Open Trade Failed: {result.comment}")
+        logger.error(f"Open Trade Failed: {result.comment}")
 
 
-def run_bot():
+
+# ... imports and config already at top ...
+
+async def get_prediction(websocket, features):
+    try:
+        await websocket.send(json.dumps({"features": features}))
+        response = await websocket.recv()
+        return json.loads(response)
+    except Exception as e:
+        logger.error(f"WebSocket Error: {e}")
+        return None
+
+async def main_loop():
     initialize_mt5()
-    print("Bot Started. Waiting for next candle...")
+    logger.info("Bot Started. connecting to WebSocket...")
     
     while True:
         try:
-            # Sleep loop to wait for candle close? 
-            # For HFT/M15, we check every minute? 
-            # Or just run once per loop with a sleep
-            
-            df = get_data()
-            if df is not None:
-                features = calculate_heiken_ashi_and_features(df)
-                if features:
-                    print(f"Features: {features[:3]}...")
-                    result = get_prediction(features)
+            async with websockets.connect(WS_URL) as websocket:
+                logger.info("Connected to Prediction Server")
+                
+                while True:
+                    # High Frequency Loop? Or Candle Close?
+                    # For now, stick to 1-minute loop or wait for next candle
                     
-                    if result:
-                        print(f"Signal: {result['signal']} ({result['confidence']:.2f})")
-                        execute_trade(result['signal'], result['confidence'])
-            
-            time.sleep(60) # check every minute
-            
+                    df = get_data()
+                    if df is not None:
+                        features = calculate_heiken_ashi_and_features(df)
+                        if features:
+                            logger.debug(f"Features: {features[:3]}...")
+                            
+                            # Async Prediction
+                            result = await get_prediction(websocket, features)
+                            
+                            if result:
+                                if "error" in result:
+                                    logger.error(f"Server Error: {result['error']}")
+                                else:
+                                    logger.info(f"Signal: {result['signal']} ({result['confidence']:.2f})")
+                                    execute_trade(result['signal'], result['confidence']) # Keep synchronous for now as MT5 is sync
+                    
+                    await asyncio.sleep(60)
+                    
+        except (websockets.ConnectionClosed, ConnectionRefusedError) as e:
+            logger.error(f"Connection lost/refused: {e}. Retrying in 5s...")
+            await asyncio.sleep(5)
         except KeyboardInterrupt:
+            logger.info("Bot shutting down...")
             mt5.shutdown()
             break
         except Exception as e:
-            print(f"Error: {e}")
-            time.sleep(10)
+            logger.error(f"Unexpected Error: {e}")
+            await asyncio.sleep(10)
 
 if __name__ == "__main__":
-    run_bot()
+    try:
+        asyncio.run(main_loop())
+    except KeyboardInterrupt:
+        pass

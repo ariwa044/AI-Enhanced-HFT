@@ -1,7 +1,7 @@
 import os
 import joblib
 import numpy as np
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from contextlib import asynccontextmanager
 from .schemas import PredictionRequest, PredictionResponse
 
@@ -49,8 +49,67 @@ def predict_xgb(X_scaled):
         return 0
 
 @app.get("/")
-def read_root():
+def health_check():
     return {"status": "occupado", "models_loaded": list(models.keys())}
+
+@app.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    await websocket.accept()
+    try:
+        while True:
+            data = await websocket.receive_json()
+            features = data.get("features")
+            
+            if not features or len(features) != 15:
+                await websocket.send_json({"error": "Invalid features. Expected 15 values."})
+                continue
+                
+            try:
+                # Same logic as predict endpoint
+                features_array = np.array(features).reshape(1, -1)
+                
+                # Retrieve models
+                rf_model = models.get("rf")
+                xgb_model = models.get("xgb")
+                rf_scaler = scalers.get("rf") # Corrected to use 'scalers' dictionary
+                xgb_scaler = scalers.get("xgb") # Corrected to use 'scalers' dictionary
+                
+                if not all([rf_model, xgb_model, rf_scaler, xgb_scaler]):
+                    await websocket.send_json({"error": "Models or scalers not loaded"}) # Adjusted error message
+                    continue
+                    
+                # Scale
+                X_rf = rf_scaler.transform(features_array)
+                X_xgb = xgb_scaler.transform(features_array)
+                
+                # Predict
+                rf_pred = rf_model.predict(X_rf)[0]
+                xgb_pred = xgb_model.predict(X_xgb)[0]
+                
+                rf_conf = np.max(rf_model.predict_proba(X_rf))
+                xgb_conf = np.max(xgb_model.predict_proba(X_xgb))
+                
+                # Consensus
+                final_signal = 0
+                if rf_pred == 1 and xgb_pred == 1:
+                    final_signal = 1
+                elif rf_pred == -1 and xgb_pred == -1:
+                    final_signal = -1
+                    
+                avg_confidence = float((rf_conf + xgb_conf) / 2)
+                
+                await websocket.send_json({
+                    "signal": int(final_signal),
+                    "confidence": avg_confidence,
+                    "rf_pred": int(rf_pred),
+                    "xgb_pred": int(xgb_pred)
+                })
+                
+            except Exception as e:
+                await websocket.send_json({"error": str(e)})
+                
+    except WebSocketDisconnect:
+        print("Client disconnected")
 
 @app.post("/predict", response_model=PredictionResponse)
 def predict(request: PredictionRequest):
