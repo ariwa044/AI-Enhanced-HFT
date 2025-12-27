@@ -392,8 +392,8 @@ async def main_loop():
                     await asyncio.sleep(60)
                     
         except (websockets.ConnectionClosed, ConnectionRefusedError) as e:
-            logger.error(f"Connection lost/refused: {e}. Retrying in 5s...")
-            await asyncio.sleep(5)
+            logger.error(f"Connection lost/refused: {e}. Retrying in 3s...")
+            await asyncio.sleep(3)
         except KeyboardInterrupt:
             logger.info("Bot shutting down...")
             mt5.shutdown()
