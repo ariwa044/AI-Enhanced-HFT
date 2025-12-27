@@ -9,7 +9,7 @@ from sklearn.cluster import KMeans
 import sys
 
 # === Configuration ===
-API_URL = "http://localhost:8000/predict"  # Change to Render URL in production
+API_URL = "http://localhost:8080/predict"  # Change to Cloud Run URL in production
 SYMBOL = "BTCUSD"
 TIMEFRAME = mt5.TIMEFRAME_M15
 LOOKBACK_BARS = 1000  # Increased to 1000 for better stability of MA/Volatility calculations
