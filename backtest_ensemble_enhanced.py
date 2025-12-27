@@ -698,8 +698,8 @@ def main():
     ensemble_file = 'ensemble_ha15m_forecast.csv'
     
     # Optional date range
-    start_date = '2025-01-01'  # Start from January 1, 2025
-    end_date = None  # Use last date in dataset
+    start_date = '2025-07-01'  # Start from January 1, 2025
+    end_date = '2025-08-01'  # Use last date in dataset
     
     risk_params = {
         'stop_loss_pips': 100,           # Wider stops for day trading (was 100)
@@ -708,8 +708,8 @@ def main():
         'max_lot_size': 1.2,
         'account_balance': 10000,
         'risk_percent': 2.0,
-        'min_holding_bars': 16,          # Minimum bars to hold (16 bars ≈ 4 hours on M15)
-        'max_daily_trades': 3            # Maximum trades per calendar day
+        'min_holding_bars': 10,          # Minimum bars to hold (16 bars ≈ 4 hours on M15)
+        'max_daily_trades': 6            # Maximum trades per calendar day
     }
     
     try:
