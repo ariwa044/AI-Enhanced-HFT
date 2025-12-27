@@ -1,15 +1,18 @@
 FROM python:3.10-slim
 
+# Build cache buster for requirements.txt updates
+ARG CACHEBUST=1
+
 WORKDIR /code
 
 # Install system dependencies if needed (e.g. for some numpy/pandas builds)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
-    && rm -rf /var/lib/apt/lists/*
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 COPY ./requirements.txt /code/requirements.txt
 
-RUN pip install --no-cache-dir --upgrade -r /code/requirements.txt
+RUN --mount=type=cache,target=/root/.cache/pip pip install --no-cache-dir --upgrade -r /code/requirements.txt
 
 COPY ./app /code/app
 
