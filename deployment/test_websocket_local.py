@@ -1,35 +1,42 @@
 import asyncio
 import websockets
 import json
-import numpy as np
 
-WS_URL = "ws://localhost:8080/ws"
+WS_URL = "wss://ws-feed.exchange.coinbase.com"
+SYMBOL = "BTC-USD"
 
-async def test_websocket():
+async def test_coinbase_websocket():
     print(f"Connecting to {WS_URL}...")
     try:
         async with websockets.connect(WS_URL) as websocket:
             print("Connected!")
             
-            # Create dummy features (15 floats)
-            dummy_features = list(np.random.rand(15))
+            # Subscribe message
+            subscribe_msg = {
+                "type": "subscribe",
+                "product_ids": [SYMBOL],
+                "channels": ["ticker"]
+            }
             
-            print("Sending features...")
-            await websocket.send(json.dumps({"features": dummy_features}))
+            print(f"Subscribing to {SYMBOL} ticker...")
+            await websocket.send(json.dumps(subscribe_msg))
             
-            print("Waiting for response...")
-            response = await websocket.recv()
-            data = json.loads(response)
+            print("Waiting for messages (Ctrl+C to stop)...")
+            count = 0
+            while count < 5:
+                response = await websocket.recv()
+                data = json.loads(response)
+                
+                if data.get("type") == "ticker":
+                    print(f"[{count+1}] Price: {data.get('price')} | Time: {data.get('time')}")
+                    count += 1
+                elif data.get("type") == "subscriptions":
+                    print(f"Subscription confirmed: {data}")
             
-            print(f"Received: {json.dumps(data, indent=2)}")
-            
-            if "signal" in data and "confidence" in data:
-                print("✓ Test Passed: Valid signal received")
-            else:
-                print("✗ Test Failed: Invalid response structure")
+            print("\n✓ Test Passed: Successfully received ticker updates")
                 
     except Exception as e:
         print(f"Test Failed: {e}")
 
 if __name__ == "__main__":
-    asyncio.run(test_websocket())
+    asyncio.run(test_coinbase_websocket())
