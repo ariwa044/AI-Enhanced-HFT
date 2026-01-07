@@ -2,16 +2,21 @@ import os
 import asyncio
 import json
 import logging
+import warnings
 import joblib
 import numpy as np
 import pandas as pd
 import aiohttp
 import websockets
 import ssl
+import traceback
 from datetime import datetime
 from fastapi import FastAPI
 from sklearn.preprocessing import StandardScaler
 from sklearn.cluster import KMeans
+
+# Suppress sklearn feature name warnings (cosmetic only, column order is correct)
+warnings.filterwarnings("ignore", category=UserWarning, module="sklearn")
 
 # === Configuration ===
 SYMBOL = "BTC-USD"
@@ -38,10 +43,201 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# === Global State ===
+global_agent = None
+
+# === HTML Template ===
+def get_dashboard_html(status, last_analysis, logs):
+    # Determine status color
+    status_color = "#4ade80" if status == "Active" else "#f87171"
+    
+    # Format logs for terminal view
+    terminal_output = "".join(logs) if logs else "No logs available..."
+
+    return f"""
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>HFT Cloud Agent</title>
+        <style>
+            :root {{
+                --bg: #1a1b26;
+                --card-bg: #24283b;
+                --text: #a9b1d6;
+                --accent: #7aa2f7;
+                --success: #4ade80;
+                --danger: #f87171;
+                --border: #414868;
+            }}
+            body {{
+                font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+                background-color: var(--bg);
+                color: var(--text);
+                margin: 0;
+                padding: 20px;
+                line-height: 1.5;
+            }}
+            .container {{
+                max-width: 1000px;
+                margin: 0 auto;
+            }}
+            .header {{
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                margin-bottom: 30px;
+                padding-bottom: 20px;
+                border-bottom: 1px solid var(--border);
+            }}
+            h1 {{ margin: 0; color: white; }}
+            .status-badge {{
+                background: {status_color}20;
+                color: {status_color};
+                padding: 5px 12px;
+                border-radius: 20px;
+                border: 1px solid {status_color};
+                font-weight: 600;
+            }}
+            .grid {{
+                display: grid;
+                grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+                gap: 20px;
+                margin-bottom: 30px;
+            }}
+            .card {{
+                background: var(--card-bg);
+                border-radius: 12px;
+                padding: 20px;
+                border: 1px solid var(--border);
+            }}
+            .card-title {{
+                color: var(--accent);
+                font-size: 0.9em;
+                text-transform: uppercase;
+                letter-spacing: 1px;
+                margin-bottom: 15px;
+                font-weight: 600;
+            }}
+            .stat-value {{
+                font-size: 1.5em;
+                color: white;
+                font-weight: 700;
+            }}
+            .stat-sub {{
+                font-size: 0.9em;
+                color: #565f89;
+                margin-top: 5px;
+            }}
+            .terminal {{
+                background: #0f111a;
+                border-radius: 8px;
+                padding: 15px;
+                font-family: 'JetBrains Mono', monospace;
+                font-size: 0.85em;
+                color: #c0caf5;
+                height: 400px;
+                overflow-y: auto;
+                white-space: pre-wrap;
+                border: 1px solid var(--border);
+            }}
+            .btn {{
+                background: var(--accent);
+                color: #1a1b26;
+                border: none;
+                padding: 10px 20px;
+                border-radius: 6px;
+                font-weight: 600;
+                cursor: pointer;
+                transition: opacity 0.2s;
+            }}
+            .btn:hover {{ opacity: 0.9; }}
+            .controls {{
+                display: flex;
+                gap: 10px;
+                margin-top: 20px;
+            }}
+        </style>
+        <script>
+            // Auto-scroll terminal to bottom
+            window.onload = function() {{
+                var terminal = document.getElementById("terminal");
+                terminal.scrollTop = terminal.scrollHeight;
+            }};
+        </script>
+    </head>
+    <body>
+        <div class="container">
+            <div class="header">
+                <h1>🚀 HFT Cloud Agent</h1>
+                <span class="status-badge">{status}</span>
+            </div>
+
+            <div class="grid">
+                <div class="card">
+                    <div class="card-title">Last Analysis</div>
+                    <div class="stat-value">{last_analysis.get('signal', 'N/A')}</div>
+                    <div class="stat-sub">
+                        Time: {last_analysis.get('time', 'Waiting...')} <br>
+                        Confidence: {last_analysis.get('conf', '0.0')}%
+                    </div>
+                </div>
+                <div class="card">
+                    <div class="card-title">Model Status</div>
+                    <div class="stat-sub">
+                        RF Vote: {last_analysis.get('rf', 'N/A')} <br>
+                        XGB Vote: {last_analysis.get('xgb', 'N/A')} <br>
+                        Symbol: {SYMBOL}
+                    </div>
+                </div>
+            </div>
+
+            <div class="card">
+                <div class="card-title">Terminal Output</div>
+                <div id="terminal" class="terminal">{terminal_output}</div>
+                
+                <div class="controls">
+                    <form action="/analyze" method="post">
+                        <button type="submit" class="btn">⚡ Force Analysis Now</button>
+                    </form>
+                    <button onclick="window.location.reload()" class="btn" style="background: var(--card-bg); color: white; border: 1px solid var(--border)">🔄 Refresh</button>
+                </div>
+            </div>
+        </div>
+    </body>
+    </html>
+    """
+
 # === FastAPI App ===
+from fastapi.responses import HTMLResponse
+from fastapi.requests import Request
+from fastapi.responses import RedirectResponse
+
 app = FastAPI()
 
-@app.get("/")
+@app.get("/", response_class=HTMLResponse)
+async def home():
+    if not global_agent:
+        return "<h1>Agent initializing... please refresh in a few seconds.</h1>"
+    
+    # Read logs
+    logs = []
+    if os.path.exists(LOG_FILE):
+        with open(LOG_FILE, 'r') as f:
+            logs = f.readlines()[-100:]  # Last 100 lines
+
+    status = "Active" if global_agent.active else "Paused"
+    
+    return get_dashboard_html(status, global_agent.last_analysis, logs)
+
+@app.post("/analyze")
+async def force_analyze():
+    if global_agent:
+        await global_agent.process_market_update(force=True)
+    return RedirectResponse(url="/", status_code=303)
+
+@app.get("/health")
 def health_check():
     return {"status": "running", "connection": "websocket_active"}
 
@@ -68,14 +264,33 @@ class EnsembleModel:
     def predict(self, features):
         if not self.loaded: return 0, 0.0, 0, 0
         try:
-            features = np.array(features).reshape(1, -1)
+            # Define feature sets specific to each model
+            # Both models appear to share the same 15-feature set found in XGB inspection
+            feature_cols = [
+                'HA_Open', 'HA_High', 'HA_Low', 'HA_Close',
+                'HA_Body', 'HA_Range', 
+                'Close_Change', 'Close_Pct_Change',
+                'Volume', 'Volume_Change', 'Volume_MA', 
+                'Cluster', 'Cluster_Density', 
+                'HA_Up_Signal', 'HA_Down_Signal'
+            ]
             
-            X_rf = self.scalers['rf'].transform(features)
+            rf_cols = feature_cols
+            xgb_cols = feature_cols
+
+            # Input `features` is now a dictionary of all potential features
+            # Create DataFrames for each model using only their required columns
+            df_rf = pd.DataFrame([features])[rf_cols]
+            df_xgb = pd.DataFrame([features])[xgb_cols]
+            
+            # Predict RF - Use .values to silence feature name warnings
+            X_rf = self.scalers['rf'].transform(df_rf.values)
             rf_pred = self.models['rf'].predict(X_rf)[0]
             rf_conf = np.max(self.models['rf'].predict_proba(X_rf))
             rf_vote = 1 if rf_pred == 1 else -1
 
-            X_xgb = self.scalers['xgb'].transform(features)
+            # Predict XGB - Use .values to silence feature name warnings
+            X_xgb = self.scalers['xgb'].transform(df_xgb.values)
             xgb_pred = self.models['xgb'].predict(X_xgb)[0]
             xgb_conf = np.max(self.models['xgb'].predict_proba(X_xgb))
             xgb_vote = 1 if xgb_pred == 1 else -1
@@ -166,6 +381,8 @@ class TradingAgent:
         self.ensemble = EnsembleModel()
         self.bot = TelegramBot()
         self.active = True
+        self.last_analysis = {} # Store last analysis result
+        self.last_signal = {"signal": None, "confidence": None} # For deduplication
 
     async def fetch_historical_candles(self):
         try:
@@ -205,35 +422,57 @@ class TradingAgent:
             
             df['HA_Body'] = abs(df['HA_Close'] - df['HA_Open'])
             df['HA_Range'] = df['HA_High'] - df['HA_Low']
-            df['HA_Close_Change'] = df['HA_Close'].pct_change()
-            df['HA_Momentum'] = df['HA_Close'] - df['HA_Close'].shift(5)
-            df['HA_Volatility'] = df['HA_Range'].rolling(5).std()
-            df['Cluster_Density'] = 50.0 
+            # === 4. Feature Engineering Logic ===
             
-            up, down = 0, 0
-            ha_c = df['HA_Close'].values
-            cons_up, cons_down = np.zeros(n), np.zeros(n)
-            for i in range(1, n):
-                if ha_c[i] > ha_c[i-1]: up, down = up+1, 0
-                elif ha_c[i] < ha_c[i-1]: down, up = down+1, 0
-                else: up, down = 0, 0
-                cons_up[i], cons_down[i] = up, down
+            # --- Clustering Feature ---
+            # Match trade_client.py logic: Use 4 HA columns + Scaling
+            if len(df) >= 252:
+                window_data = df.iloc[-252:].copy()
+                cluster_features = ['HA_Open', 'HA_High', 'HA_Low', 'HA_Close']
+                X_cluster = window_data[cluster_features].values
+                
+                # Scale data for K-Means (Crucial matches client)
+                scaler_cluster = StandardScaler()
+                X_scaled = scaler_cluster.fit_transform(X_cluster)
+                
+                kmeans = KMeans(n_clusters=3, n_init=3, max_iter=100, random_state=42)
+                cluster_labels = kmeans.fit_predict(X_scaled)
+                
+                # Current cluster ID (0, 1, or 2)
+                df.loc[df.index[-1], 'Cluster'] = int(cluster_labels[-1])
+                
+                # Density for XGBoost
+                cluster_count = np.sum(cluster_labels == cluster_labels[-1])
+                df.loc[df.index[-1], 'Cluster_Density'] = (cluster_count / 252.0) * 100
+            else:
+                df.loc[df.index[-1], 'Cluster'] = 0
+                df.loc[df.index[-1], 'Cluster_Density'] = 50.0
+
+            # --- Volume Features ---
+            df['Volume_MA_5'] = df['Volume'].rolling(5).mean()
+            df['Volume_Ratio'] = df['Volume'] / df['Volume_MA_5']
+            df['Volume_Ratio'] = df['Volume_Ratio'].fillna(1.0)
             
-            df['Consecutive_Up'] = cons_up
-            df['Consecutive_Down'] = cons_down
+            # Alias for XGBoost which expects "Volume_MA"
+            df['Volume_MA'] = df['Volume_MA_5']
             df['Volume_Change'] = df['Volume'].pct_change()
-            df['Volume_Ratio'] = 1.0
+
+            # --- Price Change Features ---
+            # Based on logs: Close_Change, Close_Pct_Change
+            df['Close_Change'] = df['HA_Close'].diff()
+            df['Close_Pct_Change'] = df['HA_Close'].pct_change()
+
+            # --- Signal Booleans ---
+            # HA_Up_Signal (Green Candle), HA_Down_Signal (Red Candle)
+            df['HA_Up_Signal'] = (df['HA_Close'] > df['HA_Open']).astype(int)
+            df['HA_Down_Signal'] = (df['HA_Close'] < df['HA_Open']).astype(int)
+
             df.fillna(0, inplace=True)
             
-            feat_cols = [
-                'HA_Open', 'HA_High', 'HA_Low', 'HA_Close',
-                'HA_Body', 'HA_Range', 'HA_Close_Change',
-                'HA_Momentum', 'HA_Volatility', 'Cluster_Density',
-                'Consecutive_Up', 'Consecutive_Down',
-                'Volume', 'Volume_Change', 'Volume_Ratio'
-            ]
-            last = df.iloc[-1]
-            return [float(last[c]) for c in feat_cols], last['time']
+            # Return the last row as a dictionary containing ALL calculated features
+            # The predict() method will select what it needs
+            last = df.iloc[-1].to_dict()
+            return last, last['time']
         except Exception as e:
             logger.error(f"Feature Calc Error: {e}")
             return None, None
@@ -248,6 +487,16 @@ class TradingAgent:
         if not features: return
 
         signal, conf, rf, xgb = self.ensemble.predict(features)
+        
+        # Update internal state for dashboard
+        side = "BUY" if signal == 1 else ("SELL" if signal == -1 else "NEUTRAL")
+        self.last_analysis = {
+            "signal": side,
+            "conf": round(conf * 100, 1),
+            "rf": rf,
+            "xgb": xgb,
+            "time": str(time_idx)
+        }
 
         if force:
             # Force mode: always report result
@@ -257,8 +506,14 @@ class TradingAgent:
             )
         else:
             if signal != 0:
-                logger.info(f"Signal Detected: {signal} (Conf: {conf})")
-                await self.bot.send_alert(signal, conf, rf, xgb, time_idx)
+                # Deduplication: Only log if signal type OR confidence changed
+                rounded_conf = round(conf, 4)  # Avoid floating point noise
+                if (signal != self.last_signal["signal"] or 
+                    rounded_conf != self.last_signal["confidence"]):
+                    logger.info(f"Signal Detected: {signal} (Conf: {conf})")
+                    await self.bot.send_alert(signal, conf, rf, xgb, time_idx)
+                    # Update last signal
+                    self.last_signal = {"signal": signal, "confidence": rounded_conf}
 
     async def handle_telegram_command(self, text, chat_id):
         cmd = text.lower().split()[0]
@@ -294,7 +549,9 @@ class TradingAgent:
                     async for _ in ws:
                         pass
             except Exception as e:
-                logger.error(f"WebSocket error: {e}")
+                # DETAILED LOGGING HERE
+                error_trace = traceback.format_exc()
+                logger.error(f"WebSocket Error: {e}\n{error_trace}")
                 await asyncio.sleep(5)
 
     async def analysis_loop(self):
@@ -312,10 +569,12 @@ class TradingAgent:
 
 @app.on_event("startup")
 async def startup_event():
-    agent = TradingAgent()
-    asyncio.create_task(agent.start())
+    global global_agent
+    global_agent = TradingAgent()
+    asyncio.create_task(global_agent.start())
 
 if __name__ == "__main__":
     import uvicorn
     port = int(os.environ.get("PORT", 8080))
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    # reload=False ensures startup event fires properly
+    uvicorn.run(app, host="0.0.0.0", port=port, reload=False)
