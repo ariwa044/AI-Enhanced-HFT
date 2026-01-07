@@ -1,0 +1,29 @@
+# Python
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+pip-log.txt
+pip-delete-this-directory.txt
+.tox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.log
+.git
+.mypy_cache
+.pytest_cache
+.hypothesize
+
+# Models (if you want to exclude local training artifacts not needed for inference, 
+# but currently we COPY app/ so we need models if they are inside app/models)
+# If models are in deployment/app/models, they will be included.
+# Exclude raw data if any
+*.csv
+*.ipynb

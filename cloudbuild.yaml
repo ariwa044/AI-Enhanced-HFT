@@ -1,0 +1,10 @@
+steps:
+  # Build the container image
+  # We use the 'dir' field to run the build context inside the 'deployment' folder
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['build', '-t', 'gcr.io/$PROJECT_ID/hft-agent', '.']
+    dir: 'deployment'
+
+# Push the image to Container Registry (or Artifact Registry)
+images:
+  - 'gcr.io/$PROJECT_ID/hft-agent'
